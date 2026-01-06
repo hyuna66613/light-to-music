@@ -7,9 +7,9 @@ import plotly.graph_objects as go
 
 # --- 설정 ---
 st.set_page_config(layout="wide", page_title="Musical Light DAW")
-st.title("🎼 GarageLight: Optical Synth DAW")
+st.title("🎼 GarageLight: Optical Synth DAW (Bug Fixed)")
 
-# 음계 설정 (마이너 펜타토닉: 밤의 몽환적인 느낌)
+# 음계 설정
 NOTES = [130.81, 155.56, 174.61, 196.00, 233.08, 
          261.63, 311.13, 349.23, 392.00, 466.16, 
          523.25, 622.25, 698.46, 783.99, 932.33]
@@ -22,18 +22,16 @@ def apply_envelope(tone, sample_rate):
     if n < 100: return tone
     attack = int(min(sample_rate * 0.01, n * 0.1))
     release = int(min(sample_rate * 0.05, n * 0.2))
-    env = np.ones(n)
+    env = np.ones(n, dtype=np.float32)
     env[:attack] = np.linspace(0, 1, attack)
     env[-release:] = np.linspace(1, 0, release)
     return tone * env
 
-# --- 사이드바 컨트롤 ---
 with st.sidebar:
     st.header("🎛 컨트롤 패널")
     uploaded_file = st.file_uploader("영상을 업로드하세요", type=['mp4', 'mov', 'avi'])
     st.divider()
     vol_boost = st.slider("볼륨 증폭도 (Gain)", 0.1, 2.0, 1.0, 0.1)
-    st.info("볼륨을 높여도 에러가 나지 않도록 안전 리미터가 작동합니다.")
 
 if uploaded_file:
     try:
@@ -48,7 +46,7 @@ if uploaded_file:
         sample_rate = 22050 
         max_tracks = 6
         
-        # 넉넉한 길이의 마스터 배열 생성
+        # 오디오 데이터를 실수형(float32)으로 관리 (에러 방지 핵심)
         audio_len = int(sample_rate * (total_frames / fps)) + (sample_rate * 2)
         master_l = np.zeros(audio_len, dtype=np.float32)
         master_r = np.zeros(audio_len, dtype=np.float32)
@@ -68,7 +66,7 @@ if uploaded_file:
             
             start_idx = int(i * (sample_rate / fps))
             duration = 1.0 / fps
-            t = np.linspace(0, duration, int(sample_rate * duration), False)
+            t = np.linspace(0, duration, int(sample_rate * duration), False).astype(np.float32)
             
             sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_tracks]
             
@@ -78,18 +76,15 @@ if uploaded_file:
                 if M["m00"] == 0: continue
                 cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
                 
-                # 음계 및 볼륨 계산
                 note_freq = get_nearest_note(150 + ((frame.shape[0] - cy) * 1.5))
-                vol = min(area / 1500, 0.5) * vol_boost
+                vol = (min(area / 1500, 0.5) * vol_boost)
                 
-                # 기본음 + 배음 합성
-                tone = vol * np.sin(2 * np.pi * note_freq * t)
-                tone += (vol * 0.2) * np.sin(2 * np.pi * (note_freq * 2) * t)
+                # 사운드 합성
+                tone = (vol * np.sin(2 * np.pi * note_freq * t)).astype(np.float32)
                 tone = apply_envelope(tone, sample_rate)
                 
-                # 입체 음향 (Panning)
                 pan_r = cx / frame.shape[1]
-                pan_l = 1 - pan_r
+                pan_l = 1.0 - pan_r
                 
                 end_idx = start_idx + len(tone)
                 if end_idx < audio_len:
@@ -100,35 +95,30 @@ if uploaded_file:
             
             if i % 30 == 0:
                 prog_bar.progress(min(i / total_frames, 1.0))
-                status.text(f"프레임 분석 중: {i}/{total_frames}")
 
-        status.success("✅ 사운드 렌더링 완료!")
-
-        # --- [에러 해결 및 볼륨 최적화 핵심 로직] ---
-        # 1. 스테레오로 합치기
+        # --- [에러 해결의 핵심: 정수 변환을 하지 않고 float32로 직접 저장] ---
         master_stereo = np.vstack((master_l, master_r)).T
         
-        # 2. 리미터 및 노멀라이징 (H format 에러 방지 핵심)
+        # 볼륨 평준화 (Peak Normalization)
         max_peak = np.max(np.abs(master_stereo))
-        
         if max_peak > 0:
-            # 전체 소리를 -1.0 ~ 1.0 범위로 압축
-            # 여기에 0.9를 곱해주면 최대 볼륨에서도 소리가 깨지지 않는 여유 공간(Headroom)이 생깁니다.
-            master_final = (master_stereo / max_peak) * 0.9
-            # 정수형(int16)으로 확실하게 변환
-            audio_out = (master_final * 32767).astype(np.int16)
+            master_final = (master_stereo / max_peak) * 0.8 # 리미터 적용
         else:
-            audio_out = master_stereo.astype(np.int16)
+            master_final = master_stereo
 
-        # --- UI 출력 ---
+        # UI 출력
         col1, col2 = st.columns([1, 1])
         with col1:
             st.header("🎞 View & Play")
             st.video(uploaded_file)
-            st.audio(audio_out, sample_rate=sample_rate)
             
+            # float32 형식으로 오디오 재생 (가장 안전함)
+            st.audio(master_final, sample_rate=sample_rate, format="audio/wav")
+            
+            # 다운로드 버튼용 바이너리 생성
             buf = io.BytesIO()
-            wavfile.write(buf, sample_rate, audio_out)
+            # float32 데이터를 그대로 저장하여 'H' format 에러 원천 차단
+            wavfile.write(buf, sample_rate, master_final.astype(np.float32))
             st.download_button("💾 Download Master (WAV)", buf.getvalue(), "musical_bus.wav")
 
         with col2:
@@ -138,7 +128,7 @@ if uploaded_file:
                     v_times = [v['time'] for v in tracks_visual[idx]]
                     v_freqs = [v['freq'] for v in tracks_visual[idx]]
                     fig = go.Figure(go.Scatter(x=v_times, y=v_freqs, mode='lines', line=dict(color='#00d1ff', width=1)))
-                    fig.update_layout(height=100, margin=dict(l=0,r=0,t=10,b=10), xaxis_visible=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                    fig.update_layout(height=100, margin=dict(l=0,r=0,t=10,b=10), xaxis_visible=False, yaxis_title="Hz", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
                     st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
