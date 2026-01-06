@@ -4,53 +4,47 @@ import numpy as np
 from scipy.io import wavfile
 import io
 import plotly.graph_objects as go
-from pydub import AudioSegment # MP3 변환용
 
 # 페이지 설정
 st.set_page_config(layout="wide", page_title="GarageLight DAW")
-st.title("🎹 GarageLight: Optical Digital Audio Workstation")
+st.title("🎹 GarageLight: Optical DAW (Multi-Track Mode)")
 
-# --- 1. 사이드바 정보창 ---
+# --- 1. 사이드바 컨트롤 ---
 with st.sidebar:
     st.header("🎛 Control Panel")
     uploaded_file = st.file_uploader("영상을 업로드하세요", type=['mp4', 'mov', 'avi'])
-    st.info("개별 광원을 트래킹하여 독립적인 신시사이저 트랙을 생성합니다.")
+    st.info("광원별로 생성된 트랙을 선택하여 조합하고 다운로드하세요.")
 
 if uploaded_file:
     try:
-        # 영상 처리 설정 (Full Frame 모드)
+        # 영상 처리 설정 (Full Frame)
         with open("temp_video.mp4", "wb") as f:
             f.write(uploaded_file.getbuffer())
         
         cap = cv2.VideoCapture("temp_video.mp4")
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        sample_rate = 44100
-        # 최대 10개의 독립 광원 트랙 생성 (서버 부하 방지)
-        max_tracks = 10
+        sample_rate = 22050 # 처리 속도와 안정성을 위해 조정
+        max_tracks = 8 # 시각적 편의를 위해 8개 트랙으로 설정
         tracks_audio = [[] for _ in range(max_tracks)]
         tracks_visual = [[] for _ in range(max_tracks)]
         
-        st.write(f"🚀 {total_frames}프레임 전체 분석 중... (전자음악 모드)")
+        status_text = st.empty()
+        status_text.write(f"🚀 {total_frames}프레임 분석 및 사운드 합성 중...")
         prog = st.progress(0)
 
+        # 분석 루프
         for i in range(total_frames):
             ret, frame = cap.read()
             if not ret: break
             
-            # 광원 분석
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             _, thresh = cv2.threshold(gray, 230, 255, cv2.THRESH_BINARY)
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            # 한 프레임의 지속 시간
             duration = 1.0 / fps
             t = np.linspace(0, duration, int(sample_rate * duration), False)
-            
-            # 상위 10개 광원만 트래킹
             sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_tracks]
             
             for idx, cnt in enumerate(sorted_contours):
@@ -59,63 +53,78 @@ if uploaded_file:
                 if M["m00"] == 0: continue
                 cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
                 
-                # 색상 추출 (B, G, R)
-                b, g, r = frame[cy, cx]
-                
-                # 매핑 공식 (위치->음정, 색상->음색, 밝기->볼륨)
-                base_freq = 200 + ( (height - cy) * 2 ) # 높을수록 고음
-                # 색상에 따른 배음 추가 (전자음 효과)
-                freq = base_freq + (r * 0.5)
-                vol = min((area / 1000) * (np.mean([r, g, b]) / 255), 1.0)
-                
-                # 사각파(Square Wave) 생성 - 더 전자음악스러운 소리
-                tone = vol * np.sign(np.sin(2 * np.pi * freq * t))
+                # 높이에 따른 음정 + 전자음(Square wave)
+                freq = 150 + ((frame.shape[0] - cy) * 1.5)
+                vol = min(area / 1500, 0.7)
+                tone = vol * np.sign(np.sin(2 * np.pi * freq * t)) # Square Wave
                 
                 tracks_audio[idx].append(tone)
                 tracks_visual[idx].append(vol)
             
-            # 광원이 없는 트랙은 침묵 처리
+            # 빈 트랙 채우기
             for j in range(len(sorted_contours), max_tracks):
                 tracks_audio[j].append(np.zeros_like(t))
                 tracks_visual[j].append(0)
-                
-            if i % 10 == 0: prog.progress(i / total_frames)
+            
+            if i % 20 == 0: prog.progress(i / total_frames)
+        
+        prog.empty()
+        status_text.success("✅ 오케스트라 레이어 생성 완료!")
 
-        # UI 배치 (영상 창 / DAW 타임라인 창)
+        # UI 레이아웃
         col_vid, col_daw = st.columns([1, 2])
         
         with col_vid:
-            st.header("📽 Input Source")
+            st.header("📽 Input Video")
             st.video(uploaded_file)
-            st.metric("Resolution", f"{width}x{height}")
-            st.metric("Frame Count", total_frames)
 
         with col_daw:
-            st.header("🎹 GarageLight DAW Timeline")
+            st.header("🎹 Timeline & Mixer")
             
-            for idx in range(max_tracks):
-                if any(tracks_visual[idx]):
-                    with st.container():
-                        st.markdown(f"**Track {idx+1}: Optical Oscillator**")
-                        # 타임라인 파형 시각화
-                        fig = go.Figure()
-                        fig.add_trace(go.Scatter(y=tracks_visual[idx], fill='tozeroy', line_color='#007AFF')) # 개러지밴드 블루
-                        fig.update_layout(height=80, margin=dict(l=0, r=0, t=0, b=0), xaxis_visible=False, yaxis_visible=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-                        
-                        # 오디오 및 MP3 다운로드
-                        full_audio = np.concatenate(tracks_audio[idx])
-                        c1, c2 = st.columns([4, 1])
-                        with c1:
-                            st.audio(full_audio, sample_rate=sample_rate)
-                        with c2:
-                            # MP3 변환
-                            buf = io.BytesIO()
-                            wavfile.write(buf, sample_rate, (full_audio * 32767).astype(np.int16))
-                            audio_seg = AudioSegment.from_wav(io.BytesIO(buf.getvalue()))
-                            mp3_buf = io.BytesIO()
-                            audio_seg.export(mp3_buf, format="mp3")
-                            st.download_button("MP3", mp3_buf.getvalue(), f"track_{idx+1}.mp3")
+            # --- 트랙 선택 기능 ---
+            available_tracks = [f"Track {i+1}" for i in range(max_tracks) if any(tracks_visual[i])]
+            
+            col_sel1, col_sel2 = st.columns([3, 1])
+            with col_sel1:
+                selected_tracks = st.multiselect("조합할 악기(트랙)를 선택하세요:", available_tracks, default=available_tracks)
+            with col_sel2:
+                if st.button("전체 선택/해제"):
+                    selected_tracks = available_tracks
+
+            # 선택된 트랙들 합치기
+            mixed_audio = None
+            if selected_tracks:
+                for t_name in selected_tracks:
+                    idx = int(t_name.split()[1]) - 1
+                    track_data = np.concatenate(tracks_audio[idx])
+                    if mixed_audio is None:
+                        mixed_audio = track_data
+                    else:
+                        # 길이 맞추기 및 믹싱
+                        min_len = min(len(mixed_audio), len(track_data))
+                        mixed_audio = mixed_audio[:min_len] + track_data[:min_len]
+
+            # --- 마스터 출력부 ---
+            if mixed_audio is not None:
+                st.subheader("🎚 Master Output (Selected Tracks Mixed)")
+                # 피크 방지 (노멀라이징)
+                mixed_audio = mixed_audio / np.max(np.abs(mixed_audio)) * 0.8
+                st.audio(mixed_audio, sample_rate=sample_rate)
+                
+                buf = io.BytesIO()
+                wavfile.write(buf, sample_rate, (mixed_audio * 32767).astype(np.int16))
+                st.download_button(f"⬇️ 선택한 {len(selected_tracks)}개 악기 조합 다운로드 (WAV)", buf.getvalue(), "mixed_lights.wav")
+
+            st.divider()
+
+            # --- 개별 트랙 타임라인 ---
+            for i, name in enumerate(available_tracks):
+                idx = int(name.split()[1]) - 1
+                with st.expander(f"🎵 {name} Details", expanded=True):
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(y=tracks_visual[idx], fill='tozeroy', line_color='#00d1ff'))
+                    fig.update_layout(height=100, margin=dict(l=0, r=0, t=0, b=0), xaxis_visible=False, yaxis_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
-        st.error(f"오류 발생: {e}. 'pydub' 라이브러리와 'ffmpeg'가 필요할 수 있습니다.")
+        st.error(f"오류가 발생했습니다: {e}")
