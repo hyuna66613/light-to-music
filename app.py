@@ -1,115 +1,121 @@
 import streamlit as st
 import cv2
 import numpy as np
-import pandas as pd
 from scipy.io import wavfile
 import io
-import os
+import plotly.graph_objects as go
+from pydub import AudioSegment # MP3 변환용
 
 # 페이지 설정
-st.set_page_config(layout="wide", page_title="Light Orchestrator")
-st.title("🚌 Night Bus Light-to-Music")
+st.set_page_config(layout="wide", page_title="GarageLight DAW")
+st.title("🎹 GarageLight: Optical Digital Audio Workstation")
 
 # --- 1. 사이드바 정보창 ---
 with st.sidebar:
-    st.header("📊 Video Info")
+    st.header("🎛 Control Panel")
     uploaded_file = st.file_uploader("영상을 업로드하세요", type=['mp4', 'mov', 'avi'])
-    st.info("광원이 높을수록 고음, 낮을수록 저음이 생성됩니다.")
-
-# --- 2. 메인 화면 레이아웃 ---
-col_vid, col_snd = st.columns([1, 1])
+    st.info("개별 광원을 트래킹하여 독립적인 신시사이저 트랙을 생성합니다.")
 
 if uploaded_file:
     try:
-        # 임시 파일 저장 (안전한 방식)
+        # 영상 처리 설정 (Full Frame 모드)
         with open("temp_video.mp4", "wb") as f:
             f.write(uploaded_file.getbuffer())
         
         cap = cv2.VideoCapture("temp_video.mp4")
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps == 0: fps = 24
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        with st.sidebar:
-            st.write(f"FPS: {fps}")
-            st.write(f"Total Frames: {total_frames}")
-
-        # 분석 설정 (성능을 위해 15프레임당 1박자 샘플링)
-        step = 15 
         sample_rate = 44100
-        audio_layers = {"Small": [], "Medium": [], "Large": []}
+        # 최대 10개의 독립 광원 트랙 생성 (서버 부하 방지)
+        max_tracks = 10
+        tracks_audio = [[] for _ in range(max_tracks)]
+        tracks_visual = [[] for _ in range(max_tracks)]
         
-        st.write("✨ 광원을 분석하고 있습니다... 잠시만 기다려주세요.")
-        progress_bar = st.progress(0)
+        st.write(f"🚀 {total_frames}프레임 전체 분석 중... (전자음악 모드)")
+        prog = st.progress(0)
 
-        for i in range(0, total_frames, step):
-            cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        for i in range(total_frames):
             ret, frame = cap.read()
             if not ret: break
             
-            # 빛 감지 로직
+            # 광원 분석
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            _, thresh = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY)
+            _, thresh = cv2.threshold(gray, 230, 255, cv2.THRESH_BINARY)
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            duration = (1.0 / fps) * step
+            # 한 프레임의 지속 시간
+            duration = 1.0 / fps
             t = np.linspace(0, duration, int(sample_rate * duration), False)
-
-            for cnt in contours:
+            
+            # 상위 10개 광원만 트래킹
+            sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_tracks]
+            
+            for idx, cnt in enumerate(sorted_contours):
                 area = cv2.contourArea(cnt)
-                if area < 10: continue # 노이즈 제거
-                
-                # 중심점 찾기
                 M = cv2.moments(cnt)
                 if M["m00"] == 0: continue
-                cy = int(M["m01"] / M["m00"])
+                cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
                 
-                # 주파수 매핑 (밤 버스 느낌의 부드러운 사인파)
-                freq = 880 - (cy * 1.2) 
-                vol = min(area / 2000, 0.8)
-                tone = vol * np.sin(2 * np.pi * freq * t)
+                # 색상 추출 (B, G, R)
+                b, g, r = frame[cy, cx]
                 
-                # 레이어 분류
-                if area < 100: audio_layers["Small"].append(tone)
-                elif area < 500: audio_layers["Medium"].append(tone)
-                else: audio_layers["Large"].append(tone)
+                # 매핑 공식 (위치->음정, 색상->음색, 밝기->볼륨)
+                base_freq = 200 + ( (height - cy) * 2 ) # 높을수록 고음
+                # 색상에 따른 배음 추가 (전자음 효과)
+                freq = base_freq + (r * 0.5)
+                vol = min((area / 1000) * (np.mean([r, g, b]) / 255), 1.0)
+                
+                # 사각파(Square Wave) 생성 - 더 전자음악스러운 소리
+                tone = vol * np.sign(np.sin(2 * np.pi * freq * t))
+                
+                tracks_audio[idx].append(tone)
+                tracks_visual[idx].append(vol)
             
-            progress_bar.progress(min(i / total_frames, 1.0))
+            # 광원이 없는 트랙은 침묵 처리
+            for j in range(len(sorted_contours), max_tracks):
+                tracks_audio[j].append(np.zeros_like(t))
+                tracks_visual[j].append(0)
+                
+            if i % 10 == 0: prog.progress(i / total_frames)
 
-        # 1번 창: 영상
+        # UI 배치 (영상 창 / DAW 타임라인 창)
+        col_vid, col_daw = st.columns([1, 2])
+        
         with col_vid:
-            st.header("📽 Video View")
+            st.header("📽 Input Source")
             st.video(uploaded_file)
+            st.metric("Resolution", f"{width}x{height}")
+            st.metric("Frame Count", total_frames)
 
-        # 2번 창: 소리 레이어 (사용자 요청 반영)
-        with col_snd:
-            st.header("🎵 Sound Layers")
+        with col_daw:
+            st.header("🎹 GarageLight DAW Timeline")
             
-            combined_all = []
-            
-            for name, tones in audio_layers.items():
-                if tones:
-                    # 모든 음을 하나로 합침
-                    layer_signal = np.concatenate(tones)
-                    st.subheader(f"Layer: {name}")
-                    
-                    # 오디오 플레이어
-                    st.audio(layer_signal, sample_rate=sample_rate)
-                    
-                    # 다운로드 버튼
-                    buf = io.BytesIO()
-                    wavfile.write(buf, sample_rate, (layer_signal * 32767).astype(np.int16))
-                    st.download_button(label=f"Download {name} Layer", data=buf.getvalue(), file_name=f"{name}_layer.wav", mime="audio/wav")
-                    
-                    combined_all.append(layer_signal[:1000000]) # 믹스용 길이는 제한
-
-            if combined_all:
-                st.divider()
-                st.button("🔥 Download All Layers (Mix Mode)")
-
-        cap.release()
-        if os.path.exists("temp_video.mp4"):
-            os.remove("temp_video.mp4")
+            for idx in range(max_tracks):
+                if any(tracks_visual[idx]):
+                    with st.container():
+                        st.markdown(f"**Track {idx+1}: Optical Oscillator**")
+                        # 타임라인 파형 시각화
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(y=tracks_visual[idx], fill='tozeroy', line_color='#007AFF')) # 개러지밴드 블루
+                        fig.update_layout(height=80, margin=dict(l=0, r=0, t=0, b=0), xaxis_visible=False, yaxis_visible=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                        
+                        # 오디오 및 MP3 다운로드
+                        full_audio = np.concatenate(tracks_audio[idx])
+                        c1, c2 = st.columns([4, 1])
+                        with c1:
+                            st.audio(full_audio, sample_rate=sample_rate)
+                        with c2:
+                            # MP3 변환
+                            buf = io.BytesIO()
+                            wavfile.write(buf, sample_rate, (full_audio * 32767).astype(np.int16))
+                            audio_seg = AudioSegment.from_wav(io.BytesIO(buf.getvalue()))
+                            mp3_buf = io.BytesIO()
+                            audio_seg.export(mp3_buf, format="mp3")
+                            st.download_button("MP3", mp3_buf.getvalue(), f"track_{idx+1}.mp3")
 
     except Exception as e:
-        st.error(f"오류가 발생했습니다: {e}")
+        st.error(f"오류 발생: {e}. 'pydub' 라이브러리와 'ffmpeg'가 필요할 수 있습니다.")
