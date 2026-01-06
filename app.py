@@ -5,52 +5,55 @@ import io
 import wave
 import plotly.graph_objects as go
 
-st.set_page_config(layout="wide", page_title="Color Synth DAW")
-st.title("🌈 Color & Light: Multi-Instrument DAW")
+st.set_page_config(layout="wide", page_title="Optical Physics DAW")
+st.title("🔦 Optical Physics Synth: Light-to-Sound Mapping")
 
-# --- 악기 설정 (색상별 특화 사운드) ---
-# R: 날카로운 리드, G: 부드러운 패드, B: 깊은 베이스, Y: 퍼커션
-INSTRUMENTS = {
-    'Red': {'freqs': [440, 554, 659, 880], 'type': 'sawtooth'},   # 날카로운 전자음
-    'Green': {'freqs': [196, 246, 293, 392], 'type': 'sine'},      # 부드러운 소리
-    'Blue': {'freqs': [82, 110, 123, 146], 'type': 'triangle'},    # 묵직한 베이스
-    'Yellow': {'freqs': [329, 392, 493, 587], 'type': 'square'}    # 톡톡 튀는 소리
-}
-
-def generate_wave(t, freq, instrument_type, brightness):
-    if instrument_type == 'sawtooth': # 빨강: 날카로운 톱니파
-        wave_data = 2 * (t * freq - np.floor(0.5 + t * freq))
-    elif instrument_type == 'square': # 노랑: 딱딱한 사각파
-        wave_data = np.sign(np.sin(2 * np.pi * freq * t))
-    elif instrument_type == 'triangle': # 파랑: 웅장한 삼각파
-        wave_data = 2 * np.abs(2 * (t * freq - np.floor(t * freq + 0.5))) - 1
-    else: # 초록: 부드러운 사인파
-        wave_data = np.sin(2 * np.pi * freq * t)
+# --- 물리 기반 매핑 엔진 ---
+def generate_phys_tone(t, freq, area, color_temp, intensity, sample_rate):
+    """
+    area (면적) -> Bass/Sub 성분 결정
+    color_temp (색온도/색상) -> 기본 주파수 및 배음 구조
+    intensity (세기/밝기) -> Cutoff Filter (소리의 선명도)
+    """
+    # 1. 면적에 따른 무게감 (면적이 클수록 서브 하모닉스 추가)
+    base_wave = np.sin(2 * np.pi * freq * t)
+    if area > 1000:
+        base_wave += 0.5 * np.sin(2 * np.pi * (freq/2) * t)
     
-    # 밝기에 따라 배음(Harmonics) 농도 조절
-    harmonics = 0.3 * (brightness / 255) * np.sin(2 * np.pi * freq * 2 * t)
-    return wave_data + harmonics
+    # 2. 색온도 기반 배음 (차가운 색일수록 날카로운 사각파 혼합)
+    # color_temp: 0(따뜻함/적색) ~ 180(차가움/청색)
+    overtone_ratio = color_temp / 180.0
+    wave_shape = (1 - overtone_ratio) * base_wave + overtone_ratio * np.sign(base_wave)
+    
+    # 3. 세기(Intensity) 기반 필터링 효과
+    # 밝기가 낮으면 고주파를 깎고, 밝으면 날카롭게 (Low-pass effect)
+    cutoff = max(0.1, intensity / 255.0)
+    wave_shape = wave_shape * cutoff
+    
+    return wave_shape.astype(np.float32)
 
-def apply_fade(tone, sample_rate):
+def apply_sustain(tone, sample_rate, persistence):
+    """
+    persistence (지속성) -> Reverb/Release 결정
+    """
     n = len(tone)
-    if n < 100: return tone
-    fade_len = int(sample_rate * 0.01) # 0.01초 페이드로 클릭 노이즈 제거
-    window = np.ones(n)
-    window[:fade_len] = np.linspace(0, 1, fade_len)
-    window[-fade_len:] = np.linspace(1, 0, fade_len)
-    return tone * window
+    # 지속성이 높을수록 테일(Tail)이 긴 엔벨로프 적용
+    release_time = min(0.1 + (persistence * 0.4), 0.5) 
+    release_samples = int(sample_rate * release_time)
+    
+    if n > release_samples:
+        env = np.ones(n)
+        env[-release_samples:] = np.linspace(1, 0, release_samples)
+        return tone * env
+    return tone
 
 with st.sidebar:
-    st.header("🎛 Synth Mixer")
+    st.header("🔬 Physics Analysis")
     uploaded_file = st.file_uploader("영상을 업로드하세요", type=['mp4', 'mov', 'avi'])
     st.divider()
-    target_tracks = st.multiselect(
-        "🔊 플레이할 색상 레이어 선택",
-        ["Red (Lead)", "Green (Pad)", "Blue (Bass)", "Yellow (Synth)"],
-        default=["Red (Lead)", "Green (Pad)", "Blue (Bass)", "Yellow (Synth)"]
-    )
-    sensitivity = st.slider("감지 민감도 (낮을수록 민감)", 30, 200, 100)
-    st.info("빨강, 초록, 파랑, 노랑 계열의 빛을 분석하여 서로 다른 악기 소리를 냅니다.")
+    threshold_val = st.slider("광원 인식 문턱값 (Intensity)", 50, 255, 200)
+    min_area = st.number_input("최소 감지 면적 (Area)", 10, 1000, 100)
+    master_vol = st.slider("Master Gain", 0.1, 5.0, 1.5)
 
 if uploaded_file:
     try:
@@ -61,93 +64,106 @@ if uploaded_file:
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         sample_rate = 22050 
-        duration = total_frames / fps
         
-        # 4개 색상 트랙 초기화
-        color_names = ['Red', 'Green', 'Blue', 'Yellow']
-        tracks_l = {name: np.zeros(int(sample_rate * duration) + sample_rate) for name in color_names}
-        tracks_r = {name: np.zeros(int(sample_rate * duration) + sample_rate) for name in color_names}
-        visual_data = {name: [] for name in color_names}
+        # 4채널 레이어 (면적순)
+        tracks_l = [np.zeros(int(sample_rate * (total_frames/fps)) + sample_rate) for _ in range(4)]
+        tracks_r = [np.zeros(int(sample_rate * (total_frames/fps)) + sample_rate) for _ in range(4)]
+        
+        # 데이터 시각화용
+        vis_intensity = [[] for _ in range(4)]
         
         prog = st.progress(0)
         for i in range(total_frames):
             ret, frame = cap.read()
             if not ret: break
             
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            _, thresh = cv2.threshold(gray, threshold_val, 255, cv2.THRESH_BINARY)
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
             start_idx = int(i * (sample_rate / fps))
             t = np.linspace(0, 1/fps, int(sample_rate/fps), False).astype(np.float32)
-
-            # 색상 범위 정의 (HSV)
-            color_masks = {
-                'Red': cv2.inRange(hsv, (0, 100, sensitivity), (10, 255, 255)) + cv2.inRange(hsv, (160, 100, sensitivity), (180, 255, 255)),
-                'Green': cv2.inRange(hsv, (40, 100, sensitivity), (80, 255, 255)),
-                'Blue': cv2.inRange(hsv, (100, 100, sensitivity), (140, 255, 255)),
-                'Yellow': cv2.inRange(hsv, (20, 100, sensitivity), (35, 255, 255))
-            }
-
-            for name, mask in color_masks.items():
-                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if contours:
-                    best_cnt = max(contours, key=cv2.contourArea)
-                    area = cv2.contourArea(best_cnt)
-                    if area > 50:
-                        M = cv2.moments(best_cnt)
-                        cx = int(M["m10"]/M["m00"])
-                        brightness = np.mean(frame[mask > 0])
-                        
-                        freq = INSTRUMENTS[name]['freqs'][int(area % 4)]
-                        vol = min(area / 2000, 0.7)
-                        
-                        tone = vol * generate_wave(t, freq, INSTRUMENTS[name]['type'], brightness)
-                        tone = apply_fade(tone, sample_rate)
-                        
-                        pan_r = cx / frame.shape[1]
-                        pan_l = 1.0 - pan_r
-                        
-                        end_idx = start_idx + len(tone)
-                        if end_idx < len(tracks_l[name]):
-                            tracks_l[name][start_idx:end_idx] += tone * pan_l
-                            tracks_r[name][start_idx:end_idx] += tone * pan_r
-                        visual_data[name].append(freq)
-                    else: visual_data[name].append(None)
-                else: visual_data[name].append(None)
             
+            # 광원을 면적순으로 4개 분석
+            sorted_cnts = sorted(contours, key=cv2.contourArea, reverse=True)[:4]
+            
+            for idx, cnt in enumerate(sorted_cnts):
+                area = cv2.contourArea(cnt)
+                if area < min_area: continue
+                
+                # 1. 색상(Hue) -> 색온도 대용
+                mask = np.zeros(gray.shape, np.uint8)
+                cv2.drawContours(mask, [cnt], -1, 255, -1)
+                avg_hsv = cv2.mean(hsv, mask=mask)
+                color_temp = avg_hsv[0] # Hue값
+                
+                # 2. 세기(Intensity)
+                intensity = cv2.mean(gray, mask=mask)[0]
+                
+                # 3. 지속성 (단순 프레임 분석 대신 면적 가중치 활용)
+                persistence = area / 5000.0
+                
+                # 주파수 매핑 (색온도와 면적 조합)
+                freq = 100 + (color_temp * 2) + (10000 / (area + 1))
+                
+                # 사운드 생성
+                tone = generate_phys_tone(t, freq, area, color_temp, intensity, sample_rate)
+                tone = apply_sustain(tone, sample_rate, persistence)
+                
+                # 위치 기반 팬닝
+                M = cv2.moments(cnt)
+                cx = int(M["m10"]/M["m00"]) if M["m00"] != 0 else frame.shape[1]//2
+                pan_r = cx / frame.shape[1]
+                pan_l = 1.0 - pan_r
+                
+                end_idx = start_idx + len(tone)
+                if end_idx < len(tracks_l[0]):
+                    tracks_l[idx][start_idx:end_idx] += tone * pan_l * master_vol
+                    tracks_r[idx][start_idx:end_idx] += tone * pan_r * master_vol
+                vis_intensity[idx].append(intensity)
+
+            for j in range(len(sorted_cnts), 4): vis_intensity[j].append(0)
             if i % 30 == 0: prog.progress(i / total_frames)
 
-        # 믹싱
-        master_l, master_r = np.zeros_like(tracks_l['Red']), np.zeros_like(tracks_r['Red'])
-        for layer_opt in target_tracks:
-            c_name = layer_opt.split()[0]
-            master_l += tracks_l[c_name]
-            master_r += tracks_r[c_name]
-            
+        # 믹싱 및 마스터링
+        master_l = np.clip(np.sum(tracks_l, axis=0), -1, 1)
+        master_r = np.clip(np.sum(tracks_r, axis=0), -1, 1)
         master_stereo = np.vstack((master_l, master_r)).T
-        peak = np.max(np.abs(master_stereo))
-        if peak > 0: master_stereo = (master_stereo / peak) * 0.8
-        audio_int16 = np.clip(master_stereo * 32767, -32768, 32767).astype(np.int16)
+        audio_int16 = (master_stereo * 32767).astype(np.int16)
 
         wav_buf = io.BytesIO()
         with wave.open(wav_buf, 'wb') as wf:
             wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(sample_rate); wf.writeframes(audio_int16.tobytes())
 
-        col_left, col_right = st.columns([1.5, 1])
-        with col_left:
-            st.header("🎞 Performance Display")
+        col1, col2 = st.columns([1.5, 1])
+        with col1:
+            st.header("📽 Optical Sync Analysis")
             st.video(uploaded_file)
             st.audio(wav_buf.getvalue())
-            st.download_button("💾 전체 믹스 다운로드", wav_buf.getvalue(), "color_synth_mix.wav")
+            
+            st.subheader("Layer Mixer (Monitoring)")
+            for i in range(4):
+                col_btn, col_info = st.columns([1, 2])
+                with col_btn:
+                    # 개별 트랙 추출 기능 유지
+                    t_buf = io.BytesIO()
+                    t_data = np.vstack((tracks_l[i], tracks_r[i])).T
+                    t_int16 = (np.clip(t_data, -1, 1) * 32767).astype(np.int16)
+                    with wave.open(t_buf, 'wb') as wf:
+                        wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(sample_rate); wf.writeframes(t_int16.tobytes())
+                    st.download_button(f"📥 Layer {i+1} WAV", t_buf.getvalue(), f"layer_{i+1}.wav")
+                with col_info:
+                    st.caption(f"Track {i+1}: Intensity-driven Resonance")
 
-        with col_right:
-            st.header("📊 Color Timeline")
-            time_axis = np.linspace(0, duration, total_frames)
+        with col2:
+            st.header("📊 Physical Data")
+            time_axis = np.linspace(0, total_frames/fps, total_frames)
             fig = go.Figure()
-            color_map = {'Red': 'red', 'Green': 'green', 'Blue': 'blue', 'Yellow': 'yellow'}
-            for name in color_names:
-                if any(x in name for x in target_tracks):
-                    fig.add_trace(go.Scatter(x=time_axis, y=visual_data[name], name=name, line=dict(color=color_map[name])))
-            fig.update_layout(template="plotly_dark", height=400, xaxis_title="Time", yaxis_title="Pitch", hovermode="x unified")
+            for i in range(4):
+                fig.add_trace(go.Scatter(x=time_axis, y=vis_intensity[i], name=f"L{i+1} Intensity", fill='tozeroy'))
+            fig.update_layout(template="plotly_dark", height=400, xaxis_title="Time", yaxis_title="Intensity (0-255)")
             st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
-        st.error(f"오류: {e}")
+        st.error(f"분석 실패: {e}")
