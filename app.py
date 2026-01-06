@@ -4,107 +4,112 @@ import numpy as np
 import pandas as pd
 from scipy.io import wavfile
 import io
-import base64
+import os
 
-# --- 1. 소리 생성 함수 (수학적 연산) ---
-def generate_tone(frequency, duration, volume=0.5, sample_rate=44100):
-    t = np.linspace(0, duration, int(sample_rate * duration))
-    # 사인파 생성 (빛의 청각화)
-    tone = volume * np.sin(2 * np.pi * frequency * t)
-    return tone
-
-# --- 2. 페이지 설정 ---
+# 페이지 설정
 st.set_page_config(layout="wide", page_title="Light Orchestrator")
 st.title("🚌 Night Bus Light-to-Music")
 
-# --- 3. 사이드바 (정보창 대체) ---
+# --- 1. 사이드바 정보창 ---
 with st.sidebar:
     st.header("📊 Video Info")
     uploaded_file = st.file_uploader("영상을 업로드하세요", type=['mp4', 'mov', 'avi'])
-    st.info("광원 위치가 높을수록 고음, 낮을수록 저음이 생성됩니다.")
+    st.info("광원이 높을수록 고음, 낮을수록 저음이 생성됩니다.")
 
-# --- 4. 메인 화면 (3개 구역) ---
+# --- 2. 메인 화면 레이아웃 ---
 col_vid, col_snd = st.columns([1, 1])
 
 if uploaded_file:
-    # 임시 파일로 영상 읽기
-    g = io.BytesIO(uploaded_file.read())
-    with open("temp_video.mp4", "wb") as f:
-        f.write(g.read())
-    
-    cap = cv2.VideoCapture("temp_video.mp4")
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    # 정보창 업데이트
-    with st.sidebar:
-        st.write(f"FPS: {fps}")
-        st.write(f"Total Frames: {total_frames}")
+    try:
+        # 임시 파일 저장 (안전한 방식)
+        with open("temp_video.mp4", "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        cap = cv2.VideoCapture("temp_video.mp4")
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps == 0: fps = 24
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        with st.sidebar:
+            st.write(f"FPS: {fps}")
+            st.write(f"Total Frames: {total_frames}")
 
-    # 소리 데이터 저장을 위한 딕셔너리
-    # 레이어: Small(고음), Medium(중음), Large(저음)
-    audio_layers = {"Small": [], "Medium": [], "Large": []}
-    
-    # 분석 프로세스 (샘플링: 10프레임당 1박자)
-    progress_bar = st.progress(0)
-    step = 10 
-    
-    for i in range(0, total_frames, step):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-        ret, frame = cap.read()
-        if not ret: break
+        # 분석 설정 (성능을 위해 15프레임당 1박자 샘플링)
+        step = 15 
+        sample_rate = 44100
+        audio_layers = {"Small": [], "Medium": [], "Large": []}
         
-        # 광원 추출 로직
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY) # 밝은 부분만 남기기
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < 5: continue # 너무 작은 노이즈 제거
-            
-            # 중심점 찾기
-            M = cv2.moments(cnt)
-            if M["m00"] == 0: continue
-            cy = int(M["m01"] / M["m00"])
-            
-            # 높이(cy)를 주파수로 변환 (위쪽이 고음)
-            freq = 1000 - (cy * 1.5) # 간단한 매핑 공식
-            duration = (1/fps) * step
-            
-            tone = generate_tone(freq, duration, volume=min(area/1000, 1.0))
-            
-            # 크기에 따라 레이어 분류
-            if area < 50: audio_layers["Small"].append(tone)
-            elif area < 200: audio_layers["Medium"].append(tone)
-            else: audio_layers["Large"].append(tone)
-        
-        progress_bar.progress(i / total_frames)
+        st.write("✨ 광원을 분석하고 있습니다... 잠시만 기다려주세요.")
+        progress_bar = st.progress(0)
 
-    # 1번 창: 영상 재생
-    with col_vid:
-        st.header("📽 Video View")
-        st.video(uploaded_file)
+        for i in range(0, total_frames, step):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+            ret, frame = cap.read()
+            if not ret: break
+            
+            # 빛 감지 로직
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY)
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            duration = (1.0 / fps) * step
+            t = np.linspace(0, duration, int(sample_rate * duration), False)
 
-    # 2번 창: 소리 레이어 및 다운로드
-    with col_snd:
-        st.header("🎵 Sound Layers")
-        
-        final_audio_all = []
-        for name, tones in audio_layers.items():
-            if tones:
-                layer_data = np.concatenate(tones)
-                st.subheader(f"Layer: {name}")
-                st.audio(layer_data, sample_rate=44100)
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                if area < 10: continue # 노이즈 제거
                 
-                # 다운로드 버튼 생성 (WAV 변환)
-                buffer = io.BytesIO()
-                wavfile.write(buffer, 44100, (layer_data * 32767).astype(np.int16))
-                st.download_button(f"Download {name} Layer", buffer, f"{name}.wav")
-                final_audio_all.append(layer_data)
+                # 중심점 찾기
+                M = cv2.moments(cnt)
+                if M["m00"] == 0: continue
+                cy = int(M["m01"] / M["m00"])
+                
+                # 주파수 매핑 (밤 버스 느낌의 부드러운 사인파)
+                freq = 880 - (cy * 1.2) 
+                vol = min(area / 2000, 0.8)
+                tone = vol * np.sin(2 * np.pi * freq * t)
+                
+                # 레이어 분류
+                if area < 100: audio_layers["Small"].append(tone)
+                elif area < 500: audio_layers["Medium"].append(tone)
+                else: audio_layers["Large"].append(tone)
+            
+            progress_bar.progress(min(i / total_frames, 1.0))
 
-        if final_audio_all:
-            st.divider()
-            st.button("🔥 Download All Layers (Mix)")
+        # 1번 창: 영상
+        with col_vid:
+            st.header("📽 Video View")
+            st.video(uploaded_file)
 
-    cap.release()
+        # 2번 창: 소리 레이어 (사용자 요청 반영)
+        with col_snd:
+            st.header("🎵 Sound Layers")
+            
+            combined_all = []
+            
+            for name, tones in audio_layers.items():
+                if tones:
+                    # 모든 음을 하나로 합침
+                    layer_signal = np.concatenate(tones)
+                    st.subheader(f"Layer: {name}")
+                    
+                    # 오디오 플레이어
+                    st.audio(layer_signal, sample_rate=sample_rate)
+                    
+                    # 다운로드 버튼
+                    buf = io.BytesIO()
+                    wavfile.write(buf, sample_rate, (layer_signal * 32767).astype(np.int16))
+                    st.download_button(label=f"Download {name} Layer", data=buf.getvalue(), file_name=f"{name}_layer.wav", mime="audio/wav")
+                    
+                    combined_all.append(layer_signal[:1000000]) # 믹스용 길이는 제한
+
+            if combined_all:
+                st.divider()
+                st.button("🔥 Download All Layers (Mix Mode)")
+
+        cap.release()
+        if os.path.exists("temp_video.mp4"):
+            os.remove("temp_video.mp4")
+
+    except Exception as e:
+        st.error(f"오류가 발생했습니다: {e}")
