@@ -5,56 +5,56 @@ import io
 import wave
 import plotly.graph_objects as go
 
-st.set_page_config(layout="wide", page_title="Optical Layer DAW")
-st.title("🎛 Layer-Specific Optical DAW: Contrast Mode")
+st.set_page_config(layout="wide", page_title="Professional Optical DAW")
+st.title("🎹 Studio Grade: Optical Electronic DAW")
 
-# --- 레이어별 고유 사운드 엔진 ---
-def generate_layer_sound(t, freq, area, intensity, layer_idx, sample_rate):
+# --- 고급 사운드 합성 엔진 ---
+def generate_pro_sound(t, freq, layer_idx, sample_rate):
     """
-    Layer 1 (가장 큰 빛): 웅장한 울림 (Ambient Pad) - 지속성 길고 부드러움
-    Layer 2 (두 번째): 딱딱 끊기는 비트 (Percussive) - 매우 짧고 타격감 있음
-    Layer 3 (세 번째): 일렉트로 리드 (Acid Lead) - 날카롭고 변조가 심함
-    Layer 4 (네 번째): 하이파이 신스 (Chirp) - 매우 높고 톡톡 튀는 소리
+    Layer 0: Deep Sub Bass - 묵직한 저음 (Sine + Harmonic)
+    Layer 1: Warm Pluck - 따뜻하게 끊기는 리듬 (Filtered Square)
+    Layer 2: Dreamy Lead - 부드러운 멜로디 (Filtered Saw)
+    Layer 3: Top Chirp - 섬세한 고음 질감 (Pure Sine High)
     """
-    if layer_idx == 0:  # 🌊 Layer 1: 웅장한 울림
-        wave = np.sin(2 * np.pi * freq * t)
-        # 매우 긴 페이드 아웃
-        env = np.linspace(1, 0.3, len(t))
-        return (wave * env).astype(np.float32)
+    if layer_idx == 0:  # 🎸 Deep Sub Bass
+        # 주파수를 낮추고(Base 40-80Hz), 배음을 섞어 묵직하게
+        base_freq = freq * 0.5 
+        wave = np.sin(2 * np.pi * base_freq * t) + 0.3 * np.sin(2 * np.pi * base_freq * 2 * t)
+        env = np.ones(len(t)) # 베이스는 지속성 있게
+        return (wave * env * 0.8).astype(np.float32)
 
-    elif layer_idx == 1:  # 🥁 Layer 2: 딱딱 끊기는 비트
-        # 사각파를 사용하여 타격감 부여
-        wave = np.sign(np.sin(2 * np.pi * freq * t))
-        # 아주 짧은 엔벨로프 (Pluck 소리)
-        env = np.exp(-np.linspace(0, 10, len(t))) 
+    elif layer_idx == 1:  # 🎹 Warm Pluck
+        # 사각파를 쓰되 고음의 날카로움을 억제하기 위해 사인파와 혼합
+        wave = 0.7 * np.sin(2 * np.pi * freq * t) + 0.3 * np.sign(np.sin(2 * np.pi * freq * t))
+        # 지수적 감쇠 (Pluck)
+        env = np.exp(-np.linspace(0, 8, len(t))) 
         return (wave * env * 0.6).astype(np.float32)
 
-    elif layer_idx == 2:  # 🎸 Layer 3: 날카로운 리드
-        # 톱니파 + 필터 변조
-        wave = 2 * (t * freq - np.floor(0.5 + t * freq))
-        env = np.ones(len(t))
-        env[-int(len(t)*0.5):] = np.linspace(1, 0, int(len(t)*0.5))
-        return (wave * env * 0.5).astype(np.float32)
-
-    else:  # ✨ Layer 4: 고음 Chirp
-        wave = np.sin(2 * np.pi * freq * 2 * t) # 주파수 2배
-        # 0.05초만 소리 나고 끊김
-        env = np.zeros(len(t))
-        env[:int(len(t)*0.3)] = 1
+    elif layer_idx == 2:  # 🎤 Dreamy Lead
+        # 톱니파를 쓰되, 고역대를 부드럽게 처리
+        wave = 0.5 * (2 * (t * freq - np.floor(0.5 + t * freq))) + 0.5 * np.sin(2 * np.pi * freq * t)
+        # 소리가 서서히 커졌다가 작아짐 (Soft Attack)
+        env = np.sin(np.linspace(0, np.pi, len(t))) 
         return (wave * env * 0.4).astype(np.float32)
 
+    else:  # ✨ Top Chirp
+        # 매우 높은 주파수에서 찰나의 소리
+        wave = np.sin(2 * np.pi * freq * 3 * t)
+        env = np.zeros(len(t))
+        env[:int(len(t)*0.2)] = np.linspace(1, 0, int(len(t)*0.2))
+        return (wave * env * 0.3).astype(np.float32)
+
 with st.sidebar:
-    st.header("🎛 Layer Mixer")
+    st.header("🎛 Studio Mixer")
     uploaded_file = st.file_uploader("영상을 업로드하세요", type=['mp4', 'mov', 'avi'])
     st.divider()
-    # 개별 레이어 활성화/비활성화
     active_layers = st.multiselect(
-        "🔊 플레이할 레이어 선택",
-        ["Layer 1 (웅장한 울림)", "Layer 2 (딱딱한 비트)", "Layer 3 (날카로운 리드)", "Layer 4 (고음 Chirp)"],
-        default=["Layer 1 (웅장한 울림)", "Layer 2 (딱딱한 비트)", "Layer 3 (날카로운 리드)", "Layer 4 (고음 Chirp)"]
+        "🔊 레이어 활성화",
+        ["Layer 1 (Sub Bass)", "Layer 2 (Warm Pluck)", "Layer 3 (Soft Lead)", "Layer 4 (High Texture)"],
+        default=["Layer 1 (Sub Bass)", "Layer 2 (Warm Pluck)", "Layer 3 (Soft Lead)", "Layer 4 (High Texture)"]
     )
-    intensity_threshold = st.slider("빛 감지 문턱값", 50, 255, 200)
-    master_gain = st.slider("Master Gain", 0.1, 3.0, 1.5)
+    intensity_val = st.slider("광원 감도", 30, 255, 180)
+    master_gain = st.slider("Master Output", 0.5, 5.0, 2.0)
 
 if uploaded_file:
     try:
@@ -69,7 +69,6 @@ if uploaded_file:
         
         tracks_l = [np.zeros(int(sample_rate * duration) + sample_rate) for _ in range(4)]
         tracks_r = [np.zeros(int(sample_rate * duration) + sample_rate) for _ in range(4)]
-        vis_pitch = [[] for _ in range(4)]
         
         prog = st.progress(0)
         for i in range(total_frames):
@@ -77,13 +76,12 @@ if uploaded_file:
             if not ret: break
             
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            _, thresh = cv2.threshold(gray, intensity_threshold, 255, cv2.THRESH_BINARY)
+            _, thresh = cv2.threshold(gray, intensity_val, 255, cv2.THRESH_BINARY)
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             start_idx = int(i * (sample_rate / fps))
             t = np.linspace(0, 1/fps, int(sample_rate/fps), False).astype(np.float32)
             
-            # 면적 순으로 정렬하여 각 레이어에 배분
             sorted_cnts = sorted(contours, key=cv2.contourArea, reverse=True)[:4]
             
             for idx, cnt in enumerate(sorted_cnts):
@@ -92,59 +90,45 @@ if uploaded_file:
                 if M["m00"] == 0: continue
                 cx = int(M["m10"]/M["m00"])
                 
-                # 빛의 특성에 따른 주파수 (면적 -> 저음, 소형 -> 고음)
-                freq = 80 + (idx * 150) + (1000 / (np.sqrt(area) + 1))
+                # 주파수 매핑 최적화 (베이스 레이어는 낮게, 리드는 높게)
+                base_f = [60, 150, 400, 1200][idx]
+                freq = base_f + (area % 200)
                 
-                # 레이어별 특화 사운드 생성
-                tone = generate_layer_sound(t, freq, area, 255, idx, sample_rate)
+                tone = generate_pro_sound(t, freq, idx, sample_rate)
                 
-                pan_r = cx / frame.shape[1]
+                # 스테레오 팬닝 최적화
+                pan_r = np.clip(cx / frame.shape[1], 0.1, 0.9)
                 pan_l = 1.0 - pan_r
                 
                 end_idx = start_idx + len(tone)
                 if end_idx < len(tracks_l[0]):
                     tracks_l[idx][start_idx:end_idx] += tone * pan_l * master_gain
                     tracks_r[idx][start_idx:end_idx] += tone * pan_r * master_gain
-                vis_pitch[idx].append(freq)
 
-            for j in range(len(sorted_cnts), 4): vis_pitch[j].append(None)
             if i % 30 == 0: prog.progress(i / total_frames)
 
-        # --- [실시간 믹싱] ---
-        master_l = np.zeros_like(tracks_l[0])
-        master_r = np.zeros_like(tracks_r[0])
-        for idx, name in enumerate(["Layer 1 (웅장한 울림)", "Layer 2 (딱딱한 비트)", "Layer 3 (날카로운 리드)", "Layer 4 (고음 Chirp)"]):
+        # 믹싱
+        final_l, final_r = np.zeros_like(tracks_l[0]), np.zeros_like(tracks_r[0])
+        for idx, name in enumerate(["Layer 1 (Sub Bass)", "Layer 2 (Warm Pluck)", "Layer 3 (Soft Lead)", "Layer 4 (High Texture)"]):
             if name in active_layers:
-                master_l += tracks_l[idx]
-                master_r += tracks_r[idx]
+                final_l += tracks_l[idx]
+                final_r += tracks_r[idx]
 
-        master_stereo = np.vstack((master_l, master_r)).T
+        # 마스터링 (Soft Clipping)
+        master_stereo = np.vstack((final_l, final_r)).T
         peak = np.max(np.abs(master_stereo))
-        if peak > 0: master_stereo = (master_stereo / peak) * 0.9
+        if peak > 0: master_stereo = (master_stereo / peak) * 0.85
         audio_int16 = (master_stereo * 32767).astype(np.int16)
 
         wav_buf = io.BytesIO()
         with wave.open(wav_buf, 'wb') as wf:
             wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(sample_rate); wf.writeframes(audio_int16.tobytes())
 
-        # UI 출력
-        col_main, col_sub = st.columns([1.5, 1])
-        with col_main:
-            st.header("🎞 Sync Performance")
-            st.video(uploaded_file)
-            st.audio(wav_buf.getvalue())
-            st.download_button("💾 전체 믹스 다운로드", wav_buf.getvalue(), "layer_contrast_mix.wav")
-
-        with col_sub:
-            st.header("📊 MIDI-Style Timeline")
-            time_axis = np.linspace(0, duration, total_frames)
-            fig = go.Figure()
-            colors = ['#00d1ff', '#ff4b4b', '#7752fe', '#00ff88']
-            for i in range(4):
-                if any(f"Layer {i+1}" in n for n in active_layers):
-                    fig.add_trace(go.Scatter(x=time_axis, y=vis_pitch[i], name=f"L{i+1}", line=dict(color=colors[i])))
-            fig.update_layout(template="plotly_dark", height=400, xaxis=dict(rangeslider=dict(visible=True)))
-            st.plotly_chart(fig, use_container_width=True)
+        # UI
+        st.header("🎧 Master Mix Playback")
+        st.video(uploaded_file)
+        st.audio(wav_buf.getvalue())
+        st.download_button("💾 Studio Mix 다운로드", wav_buf.getvalue(), "studio_mix.wav")
 
     except Exception as e:
         st.error(f"오류: {e}")
