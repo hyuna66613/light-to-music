@@ -6,7 +6,7 @@ import io
 import plotly.graph_objects as go
 
 st.set_page_config(layout="wide", page_title="Musical Light DAW")
-st.title("🎹 Harmonic Synth DAW (Error Fixed)")
+st.title("🎹 Harmonic Synth DAW (Audio Clipping Fixed)")
 
 # --- 음악적 설정 ---
 NOTES = [130.81, 155.56, 174.61, 196.00, 233.08, 
@@ -37,15 +37,16 @@ if uploaded_file:
         
         cap = cv2.VideoCapture("temp_video.mp4")
         fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps < 1 or np.isnan(fps): fps = 30 # FPS 예외 처리
+        if fps < 1 or np.isnan(fps): fps = 30
         
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         sample_rate = 22050 
         max_tracks = 6
         
-        # 오디오 데이터를 프레임 단위로 저장하지 않고 전체 스트림으로 관리
-        master_l = np.zeros(int(sample_rate * (total_frames / fps)) + 100)
-        master_r = np.zeros(int(sample_rate * (total_frames / fps)) + 100)
+        # 넉넉한 길이의 마스터 배열 생성
+        audio_len = int(sample_rate * (total_frames / fps)) + sample_rate
+        master_l = np.zeros(audio_len)
+        master_r = np.zeros(audio_len)
         
         tracks_visual = [[] for _ in range(max_tracks)]
         
@@ -60,11 +61,9 @@ if uploaded_file:
             _, thresh = cv2.threshold(gray, 225, 255, cv2.THRESH_BINARY)
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            # 현재 프레임의 오디오가 시작될 위치 계산
             start_idx = int(i * (sample_rate / fps))
             duration = 1.0 / fps
-            num_samples = int(sample_rate * duration)
-            t = np.linspace(0, duration, num_samples, False)
+            t = np.linspace(0, duration, int(sample_rate * duration), False)
             
             sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)[:max_tracks]
             
@@ -77,52 +76,57 @@ if uploaded_file:
                 note_freq = get_nearest_note(150 + ((frame.shape[0] - cy) * 1.5))
                 vol = min(area / 1500, 0.5)
                 
-                # 기본음 + 배음 합성
                 tone = vol * np.sin(2 * np.pi * note_freq * t)
                 tone += (vol * 0.2) * np.sin(2 * np.pi * (note_freq * 2) * t)
                 tone = apply_envelope(tone, sample_rate)
                 
-                # 스테레오 팬닝
                 pan_r = cx / frame.shape[1]
                 pan_l = 1 - pan_r
                 
-                # --- 핵심 해결책: 배열 크기를 맞춰서 가산 ---
                 end_idx = start_idx + len(tone)
-                if end_idx < len(master_l):
+                if end_idx < audio_len:
                     master_l[start_idx:end_idx] += tone * pan_l
                     master_r[start_idx:end_idx] += tone * pan_r
                 
-                tracks_visual[idx].append({'time': i/fps, 'freq': note_freq, 'vol': vol})
+                tracks_visual[idx].append({'time': i/fps, 'freq': note_freq})
             
             if i % 30 == 0:
-                prog.progress(i / total_frames)
-                status_text.text(f"분석 중: {i}/{total_frames} 프레임")
+                prog.progress(min(i / total_frames, 1.0))
 
-        # 결과물 정리 (노멀라이징)
+        # --- 핵심 해결책: 안전한 노멀라이징 ---
         master_stereo = np.vstack((master_l, master_r)).T
+        
+        # 1. 절대값 기준 가장 큰 소리를 찾습니다.
         max_val = np.max(np.abs(master_stereo))
+        
         if max_val > 0:
-            master_stereo = (master_stereo / max_val * 32767).astype(np.int16)
+            # 2. 모든 소리를 -1.0 ~ 1.0 사이로 압축합니다. (Clipping 방지)
+            master_normalized = master_stereo / max_val
+            # 3. 16비트 오디오 범위(-32768 ~ 32767)로 안전하게 변환합니다.
+            master_final = (master_normalized * 32767).astype(np.int16)
+        else:
+            master_final = master_stereo.astype(np.int16)
 
         # UI 출력
         col1, col2 = st.columns([1, 1])
         with col1:
             st.header("🎞 View & Play")
             st.video(uploaded_file)
-            st.audio(master_stereo, sample_rate=sample_rate)
+            st.audio(master_final, sample_rate=sample_rate)
             
             buf = io.BytesIO()
-            wavfile.write(buf, sample_rate, master_stereo)
+            wavfile.write(buf, sample_rate, master_final)
             st.download_button("💾 Download Master (WAV)", buf.getvalue(), "musical_bus.wav")
 
         with col2:
             st.header("📊 Harmonic Timeline")
+            # 시각화 로직 (동일)
             for idx in range(max_tracks):
                 if tracks_visual[idx]:
                     times = [v['time'] for v in tracks_visual[idx]]
                     freqs = [v['freq'] for v in tracks_visual[idx]]
                     fig = go.Figure(go.Scatter(x=times, y=freqs, mode='lines', line=dict(color='#00d1ff')))
-                    fig.update_layout(height=100, margin=dict(l=0,r=0,t=10,b=10), xaxis_title="Time(s)", yaxis_title="Hz")
+                    fig.update_layout(height=100, margin=dict(l=0,r=0,t=10,b=10), xaxis_title="Time(s)", yaxis_visible=False)
                     st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
