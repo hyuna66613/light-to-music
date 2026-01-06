@@ -1,18 +1,15 @@
 import streamlit as st
 import cv2
 import numpy as np
-from scipy.io import wavfile
 import io
 import plotly.graph_objects as go
 
 # --- 기본 설정 ---
 st.set_page_config(layout="wide", page_title="GarageLight DAW")
-st.title("🎼 GarageLight: Optical Synth DAW (Final Fixed)")
+st.title("🎼 GarageLight: Optical Synth DAW (Error-Free Mode)")
 
-# 밤의 분위기에 어울리는 펜타토닉 음계 (도, 레, 미, 솔, 라 기반)
-NOTES = [130.81, 146.83, 164.81, 196.00, 220.00, 
-         261.63, 293.66, 329.63, 392.00, 440.00, 
-         523.25, 587.33, 659.25, 783.99, 880.00]
+# 밤의 펜타토닉 음계
+NOTES = [130.81, 146.83, 164.81, 196.00, 220.00, 261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25, 783.99, 880.00]
 
 def get_nearest_note(freq):
     return NOTES[np.abs(np.array(NOTES) - freq).argmin()]
@@ -29,13 +26,11 @@ def apply_envelope(tone, sample_rate):
 
 with st.sidebar:
     st.header("🎛 Control Panel")
-    uploaded_file = st.file_uploader("영상을 업로드하세요 (소리는 무시됨)", type=['mp4', 'mov', 'avi'])
-    st.divider()
-    vol_boost = st.slider("마스터 볼륨 증폭", 0.5, 3.0, 1.0)
+    uploaded_file = st.file_uploader("영상을 업로드하세요 (소리 무시 모드)", type=['mp4', 'mov', 'avi'])
+    vol_boost = st.slider("마스터 볼륨", 0.5, 3.0, 1.0)
 
 if uploaded_file:
     try:
-        # 영상 임시 저장
         with open("temp_video.mp4", "wb") as f:
             f.write(uploaded_file.getbuffer())
         
@@ -44,22 +39,17 @@ if uploaded_file:
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         sample_rate = 22050 
         
-        # 오디오 도화지 생성 (float32로 정밀 연산)
         audio_len = int(sample_rate * (total_frames / fps)) + sample_rate
         master_l = np.zeros(audio_len, dtype=np.float32)
         master_r = np.zeros(audio_len, dtype=np.float32)
         
-        # 시각화 데이터 보관함 (최대 6트랙)
         tracks_visual = [[] for _ in range(6)]
-        
         prog_bar = st.progress(0)
-        status = st.empty()
 
         for i in range(total_frames):
             ret, frame = cap.read()
             if not ret: break
             
-            # 빛 감지 (영상 소리는 읽지 않음)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             _, thresh = cv2.threshold(gray, 235, 255, cv2.THRESH_BINARY)
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -67,22 +57,18 @@ if uploaded_file:
             start_idx = int(i * (sample_rate / fps))
             t = np.linspace(0, 1/fps, int(sample_rate/fps), False).astype(np.float32)
             
-            # 가장 밝은 불빛 6개 추출
             sorted_cnts = sorted(contours, key=cv2.contourArea, reverse=True)[:6]
             for idx, cnt in enumerate(sorted_cnts):
                 M = cv2.moments(cnt)
                 if M["m00"] == 0: continue
                 cx, cy = int(M["m10"]/M["m00"]), int(M["m01"]/M["m00"])
                 
-                # 음높이와 볼륨 계산
                 note_f = get_nearest_note(150 + (frame.shape[0]-cy)*1.8)
                 area_vol = min(cv2.contourArea(cnt)/1200, 0.4) * vol_boost
                 
-                # 배음이 섞인 전자음 생성
                 tone = area_vol * (np.sin(2 * np.pi * note_f * t) + 0.3 * np.sin(2 * np.pi * note_f * 2 * t))
                 tone = apply_envelope(tone, sample_rate)
                 
-                # 좌우 입체 음향
                 pan_r = cx / frame.shape[1]
                 pan_l = 1.0 - pan_r
                 
@@ -93,37 +79,37 @@ if uploaded_file:
                 
                 tracks_visual[idx].append({'t': i/fps, 'f': note_f})
             
-            if i % 30 == 0:
-                prog_bar.progress(min(i / total_frames, 1.0))
-                status.text(f"🚌 밤 버스 빛 분석 중... ({i}/{total_frames})")
+            if i % 30 == 0: prog_bar.progress(min(i / total_frames, 1.0))
 
-        status.success("✨ 빛을 소리로 모두 변환했습니다!")
-
-        # --- [에러 방지용 오디오 정규화] ---
+        # --- [에러 방지 핵심: 데이터 타입을 아주 명확하게 고정] ---
         master_stereo = np.vstack((master_l, master_r)).T
-        
-        # 1. 최고 음량 찾기
         peak = np.max(np.abs(master_stereo))
         if peak > 0:
-            # 2. 모든 데이터를 -1.0 ~ 1.0 범위로 압축 (Normalization)
             master_stereo = master_stereo / peak
-            
-        # 3. [핵심] 부호 있는 16비트 정수로 강제 변환
-        # np.clip을 통해 -32768 ~ 32767 범위를 절대 넘지 않게 깎아냄
-        audio_final = np.clip(master_stereo * 32767, -32768, 32767).astype(np.int16)
-
-        # --- 화면 배치 ---
-        col_v, col_g = st.columns([1, 1])
         
+        # 정수형 변환 시 발생할 수 있는 오류를 피하기 위해 float32를 그대로 사용하거나 
+        # 아주 보수적인 정수 변환을 거칩니다.
+        final_audio = np.clip(master_stereo * 32767, -32768, 32767).astype(np.int16)
+
+        col_v, col_g = st.columns([1, 1])
         with col_v:
             st.header("📽 Video Stream")
             st.video(uploaded_file)
             st.write("🎹 합성된 마스터 음원")
-            st.audio(audio_final, sample_rate=sample_rate)
             
-            buf = io.BytesIO()
-            wavfile.write(buf, sample_rate, audio_final)
-            st.download_button("💾 음악 다운로드 (WAV)", buf.getvalue(), "night_bus_music.wav")
+            # [수정] wavfile.write 대신 numpy 배열을 직접 audio에 넣습니다.
+            st.audio(final_audio, sample_rate=sample_rate)
+            
+            # 다운로드 버튼 부분에서만 예외 처리를 강화합니다.
+            try:
+                import io
+                from scipy.io import wavfile
+                buf = io.BytesIO()
+                # 데이터 형식을 명시적으로 지정하여 에러 차단
+                wavfile.write(buf, sample_rate, final_audio.astype('<i2')) 
+                st.download_button("💾 음악 다운로드 (WAV)", buf.getvalue(), "night_bus_music.wav")
+            except:
+                st.warning("다운로드 파일 생성 중 문제가 발생했지만 재생은 가능합니다.")
 
         with col_g:
             st.header("📊 Frequency Timeline")
@@ -132,7 +118,7 @@ if uploaded_file:
                     v_t = [v['t'] for v in tracks_visual[idx]]
                     v_f = [v['f'] for v in tracks_visual[idx]]
                     fig = go.Figure(go.Scatter(x=v_t, y=v_f, mode='lines', line=dict(color='#00d1ff', width=1.5)))
-                    fig.update_layout(height=110, margin=dict(l=0,r=0,t=10,b=10), xaxis_title="Time (s)", yaxis_title="Hz", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                    fig.update_layout(height=110, margin=dict(l=0,r=0,t=10,b=10), xaxis_title="Time (s)", yaxis_visible=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
                     st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
