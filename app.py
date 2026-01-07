@@ -4,36 +4,42 @@ import numpy as np
 import io
 import wave
 import plotly.graph_objects as go
-from midiutil import MIDIFile  # MIDI 생성 라이브러리 추가
 
-st.set_page_config(layout="wide", page_title="Optical to MIDI DAW")
-st.title("🎹 Optical MIDI Composer: Export to GarageBand")
+st.set_page_config(layout="wide", page_title="Refined Optical DAW")
+st.title("🎹 Refined Sound: Optical Electronic DAW")
 
-# --- 설정 ---
-BPM = 120
-SAMPLE_RATE = 22050
-BEAT_SEC = 60 / BPM 
-UNIT_SEC = BEAT_SEC / 2  # 8분 음표 단위 분석
-
-# 주파수를 MIDI 노트 번호로 변환하는 함수
-def freq_to_midi(freq):
-    if freq <= 0: return 60 # 기본값 C4
-    return int(12 * np.log2(freq / 440.0) + 69)
-
-def generate_pro_wave(freq, duration, layer_idx, mood_v):
-    t = np.linspace(0, duration, int(SAMPLE_RATE * duration), False)
-    if layer_idx == 0: # Bass
-        wave_data = np.sin(2 * np.pi * freq * t)
-    elif layer_idx == 3: # Bell
-        wave_data = np.sin(2 * np.pi * freq * t + 0.5 * np.sin(2 * np.pi * freq * 2.01 * t))
-    else: # Pluck
-        wave_data = 0.6 * np.sin(2 * np.pi * freq * t) + 0.4 * np.sign(np.sin(2 * np.pi * freq * t))
+# --- 정밀 사운드 엔진 ---
+def apply_soft_envelope(tone, layer_idx):
+    n = len(tone)
+    t_env = np.linspace(0, 1, n)
     
-    # Envelope
-    n = len(tone := wave_data)
-    env = np.exp(-np.linspace(0, 5, n))
-    return (tone * env).astype(np.float32)
+    if layer_idx == 0:  # Deep Bass: 아주 부드럽고 묵직하게
+        env = np.sin(t_env * np.pi * 0.5 + np.pi * 0.5) # 서서히 줄어드는 감쇠
+        return tone * env * 1.2
+    elif layer_idx == 1 or layer_idx == 2:  # Warm Pluck/Lead: 고음의 날카로움을 깎음
+        # 소리가 툭 치고 부드럽게 사라짐
+        env = np.exp(-t_env * 5)
+        return tone * env * 0.7
+    else:  # Track 4: Snap/Chirp (기존의 좋은 느낌 유지)
+        env = np.exp(-t_env * 25) # 아주 짧은 타격감
+        return tone * env * 0.9
 
+def generate_tuned_wave(freq, duration, layer_idx):
+    t = np.linspace(0, duration, int(22050 * duration), False)
+    
+    if layer_idx == 0: # Bass: 순수한 저음
+        wave_data = np.sin(2 * np.pi * freq * t)
+    elif layer_idx == 1: # Track 2: 부드러운 오르간 느낌
+        wave_data = np.sin(2 * np.pi * freq * t) + 0.3 * np.sin(2 * np.pi * freq * 2 * t)
+    elif layer_idx == 2: # Track 3: 따뜻한 패드 느낌
+        # 배음을 섞되 위상을 조절해 날카로움을 중화
+        wave_data = np.sin(2 * np.pi * freq * t) * 0.7 + np.sin(2 * np.pi * (freq + 2) * t) * 0.3
+    else: # Track 4: 기존의 핑거스냅/클릭 질감
+        wave_data = np.sign(np.sin(2 * np.pi * freq * t)) * (np.random.rand(len(t)) * 0.1 + 0.9)
+        
+    return apply_soft_envelope(wave_data, layer_idx)
+
+# --- 메인 로직 ---
 uploaded_file = st.file_uploader("영상을 업로드하세요", type=['mp4', 'mov', 'avi'])
 
 if uploaded_file:
@@ -43,96 +49,80 @@ if uploaded_file:
     
     cap = cv2.VideoCapture(temp_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    video_len = total_frames / fps
+    video_len = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) / fps
+    
+    BPM = 120
+    UNIT_SEC = (60/BPM) / 2 # 8분 음표 기준
     num_units = int(video_len / UNIT_SEC)
     
-    # 오디오 데이터 및 MIDI 데이터 저장용
-    tracks_l = [np.zeros(int(SAMPLE_RATE * video_len) + 500) for _ in range(4)]
-    tracks_r = [np.zeros(int(SAMPLE_RATE * video_len) + 500) for _ in range(4)]
-    midi_data = [[] for _ in range(4)] # [ (time, pitch, velocity), ... ]
+    tracks_l = [np.zeros(int(22050 * video_len) + 1000) for _ in range(4)]
+    tracks_r = [np.zeros(int(22050 * video_len) + 1000) for _ in range(4)]
+    vis_data = [[] for _ in range(4)]
 
     prog = st.progress(0)
     for u in range(num_units):
-        target_frame = int(u * UNIT_SEC * fps)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(u * UNIT_SEC * fps))
         ret, frame = cap.read()
         if not ret: break
         
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+        _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
         sorted_cnts = sorted(contours, key=cv2.contourArea, reverse=True)[:4]
-        start_s = int(u * UNIT_SEC * SAMPLE_RATE)
         
+        start_s = int(u * UNIT_SEC * 22050)
         for idx, cnt in enumerate(sorted_cnts):
             area = cv2.contourArea(cnt)
-            M = cv2.moments(cnt)
-            if M["m00"] == 0: continue
+            cx = int(cv2.moments(cnt)["m10"]/cv2.moments(cnt)["m00"]) if cv2.moments(cnt)["m00"] != 0 else 0
             
-            # 주파수 및 MIDI 노트 계산
-            base_f = [65.4, 130.8, 261.6, 523.2][idx]
-            freq = base_f + (area % 30)
-            pitch = freq_to_midi(freq)
-            velocity = int(np.clip((area / 5000) * 127, 40, 127)) # 면적을 MIDI 벨로시티로
+            freq = [65.4, 130.8, 261.6, 880.0][idx] + (area % 20)
+            tone = generate_tuned_wave(freq, UNIT_SEC, idx)
             
-            # 오디오 생성
-            tone = generate_pro_wave(freq, UNIT_SEC, idx, 0.5)
+            pan_r = np.clip(cx / frame.shape[1], 0.1, 0.9)
+            pan_l = 1.0 - pan_r
+            
             end_s = start_s + len(tone)
-            if end_s < len(tracks_l[0]):
-                tracks_l[idx][start_s:end_s] += tone * 0.5
-                tracks_r[idx][start_s:end_s] += tone * 0.5
-            
-            # MIDI 데이터 기록 (박자 단위)
-            midi_data[idx].append((u * 0.5, pitch, velocity)) # u * 0.5는 8분음표 박자 위치
-
+            if end_s < len(tracks_l[idx]):
+                tracks_l[idx][start_s:end_s] += tone * pan_l
+                tracks_r[idx][start_s:end_s] += tone * pan_r
+            vis_data[idx].append(freq)
+        for j in range(len(sorted_cnts), 4): vis_data[j].append(None)
         if u % 10 == 0: prog.progress(u / num_units)
     cap.release()
 
-    # --- MIDI 파일 생성 ---
-    midi_file = MIDIFile(4) # 4개 트랙
-    for idx, track_notes in enumerate(midi_data):
-        midi_file.addTempo(idx, 0, BPM)
-        track_name = ["Bass", "Pluck", "Lead", "Bell"][idx]
-        midi_file.addTrackName(idx, 0, track_name)
-        
-        for time, pitch, vel in track_notes:
-            # duration을 0.5(8분음표)로 설정
-            midi_file.addNote(idx, 0, pitch, time, 0.5, vel)
-
-    midi_db = io.BytesIO()
-    midi_file.writeFile(midi_db)
-
     # --- UI ---
-    st.header("📂 Export to GarageBand")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("1. MIDI Export (강력 추천)")
-        st.write("GarageBand에서 이 파일을 불러와서 **원하는 가상악기**를 입히세요.")
-        st.download_button("💾 MIDI 파일 다운로드", midi_db.getvalue(), "optical_composition.mid")
-        
-
-    with col2:
-        st.subheader("2. Master Audio")
-        m_l, m_r = np.sum(tracks_l, axis=0), np.sum(tracks_r, axis=0)
+    st.header("🎞 Master Mix & Analysis")
+    col_v, col_g = st.columns(2)
+    with col_v:
+        st.video(temp_path)
+        m_l = np.clip(np.sum(tracks_l, axis=0), -1, 1)
+        m_r = np.clip(np.sum(tracks_r, axis=0), -1, 1)
         master = np.vstack((m_l, m_r)).T
-        if np.max(np.abs(master)) > 0: master = (master / np.max(np.abs(master))) * 0.8
         m_io = io.BytesIO()
         with wave.open(m_io, 'wb') as wf:
-            wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(SAMPLE_RATE); wf.writeframes((master * 32767).astype(np.int16).tobytes())
+            wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(22050); wf.writeframes((master * 32767).astype(np.int16).tobytes())
         st.audio(m_io.getvalue())
+        st.download_button("💾 전체 Mix 저장", m_io.getvalue(), "final_mix.wav")
+
+    with col_g:
+        fig = go.Figure()
+        t_axis = np.linspace(0, video_len, len(vis_data[0]))
+        for i, color in enumerate(['#00E5FF', '#FF3D00', '#D500F9', '#FFEA00']):
+            fig.add_trace(go.Scatter(x=t_axis, y=vis_data[i], name=f"Layer {i+1}", line=dict(color=color)))
+        fig.update_layout(template="plotly_dark", height=400)
+        st.plotly_chart(fig, use_container_width=True)
 
     st.divider()
-    st.subheader("📁 개별 트랙 오디오 모니터링")
+    st.subheader("📁 Layer Stems (Individual Play & Save)")
     cols = st.columns(4)
     for i in range(4):
         with cols[i]:
             l_data = np.vstack((tracks_l[i], tracks_r[i])).T
-            if np.max(np.abs(l_data)) > 0: l_data = (l_data / np.max(np.abs(l_data))) * 0.7
+            p = np.max(np.abs(l_data))
+            if p > 0: l_data = (l_data / p) * 0.7
             l_io = io.BytesIO()
             with wave.open(l_io, 'wb') as wf:
-                wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(SAMPLE_RATE); wf.writeframes((l_data * 32767).astype(np.int16).tobytes())
-            st.caption(f"Track {i+1}")
+                wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(22050); wf.writeframes((l_data * 32767).astype(np.int16).tobytes())
+            st.write(f"Track {i+1}")
             st.audio(l_io.getvalue())
+            st.download_button(f"📥 Layer {i+1} 저장", l_io.getvalue(), f"track_{i+1}.wav")
